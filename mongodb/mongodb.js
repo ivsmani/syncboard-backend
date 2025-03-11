@@ -1,7 +1,7 @@
 
 const { MongoClient } = require("mongodb");
 
-const uri = "mongodb://localhost:27017"; // Update if needed
+const uri = "mongodb+srv://sreelakshmi:uWH7dGJq099JxG6H@syncboard.kh6rw.mongodb.net/?retryWrites=true&w=majority&appName=Syncboard"; // Update if needed // Update if needed
 const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true });
 
 let db;
@@ -9,7 +9,7 @@ let db;
 const connectDB = async () => {
     try {
         await client.connect();
-        db = client.db("whiteboard"); // Database name
+        db = client.db("syncboard"); // Database name
         console.log("MongoDB Connected...");
     } catch (err) {
         console.error("MongoDB connection error:", err);
