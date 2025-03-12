@@ -1,4 +1,6 @@
 const { getStickyNotes, addStickyNote, deleteStickyNote, updateStickyNote } = require("../controller/stickyNoteController");
+const { saveDrawings, deletedrawings } = require("../controller/drawingController");
+let currentDrawing = [];
 module.exports = (io) => {
     io.on("connection", (socket) => {
         console.log("User connected:", socket.id);
@@ -37,6 +39,32 @@ module.exports = (io) => {
             console.log(result)
 
         });
+        socket.on("draw", (path) => {
+            currentDrawing.push(path);
+            socket.broadcast.emit("draw", path);
+        });
+
+        // Save drawing when user stops
+        socket.on("stop-draw", async (drawing) => {
+            try {
+                console.log("stop-draw", drawing)
+
+                await saveDrawings(drawing);
+                socket.emit("drawing-saved");
+
+            } catch (error) {
+                console.error("❌ Error Saving Drawing:", error);
+            }
+        });
+
+        // Clear canvas
+        socket.on("clear-canvas", async (drawing) => {
+            currentDrawing = [];
+            io.emit("clear-canvas");
+            await deletedrawings(drawing)
+
+        });
+
         socket.on("disconnect", () => {
             console.log("User disconnected");
         });
