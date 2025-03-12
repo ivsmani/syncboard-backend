@@ -45,12 +45,13 @@ module.exports = (io) => {
         });
 
         // Save drawing when user stops
-        socket.on("stop-draw", async () => {
+        socket.on("stop-draw", async (drawing) => {
             try {
-                if (currentDrawing.length > 0) {
-                    await saveDrawings(currentDrawing);
-                    socket.emit("drawing-saved");
-                }
+                console.log("stop-draw", drawing)
+
+                await saveDrawings(drawing);
+                socket.emit("drawing-saved");
+
             } catch (error) {
                 console.error("❌ Error Saving Drawing:", error);
             }
