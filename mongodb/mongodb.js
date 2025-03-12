@@ -20,9 +20,8 @@ module.exports = {
     read: async function (query, targetcollection, res) {
         try {
             await connectDB()
-            const notes = await db.collection(targetcollection).find().toArray();
-            console.log(notes)
-            return notes;
+            const result = await db.collection(targetcollection).find().toArray();
+            return result;
         } catch (err) {
             console.log(err)
             res.status(500).json({ error: err.message });
@@ -32,9 +31,8 @@ module.exports = {
         try {
             await connectDB()
             console.log("query", query)
-            const notesadd = await db.collection(targetcollection).insertOne(query);
-            console.log(notesadd)
-            return notesadd;
+            const result = await db.collection(targetcollection).insertOne(query);
+            return result;
         } catch (err) {
             console.log(err)
             throw err
@@ -43,12 +41,11 @@ module.exports = {
     update: async function (query, targetcollection, res) {
         try {
             await connectDB()
-            console.log("query", query)
-            const notesUpdate = await db.collection(targetcollection).updateOne(
+            const result = await db.collection(targetcollection).updateOne(
                 { id: (query.id) },
                 { $set: { text: query.text, color: query.color } }
             );
-            return notesUpdate;
+            return result;
         } catch (err) {
             console.log(err)
             throw err
@@ -57,9 +54,8 @@ module.exports = {
     delete: async function (query, targetcollection, res) {
         try {
             await connectDB()
-            console.log("query", query)
-            const notesDelete = db.collection(targetcollection).deleteOne({ id: query });
-            return notesDelete;
+            const result = db.collection(targetcollection).deleteOne({ id: query });
+            return result;
         } catch (err) {
             console.log(err)
             throw err
