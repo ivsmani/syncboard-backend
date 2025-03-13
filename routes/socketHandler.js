@@ -1,5 +1,5 @@
 const { getStickyNotes, addStickyNote, deleteStickyNote, updateStickyNote } = require("../controller/stickyNoteController");
-const { saveDrawings, deletedrawings } = require("../controller/drawingController");
+const { saveDrawings, getDrawings, deletedrawings } = require("../controller/drawingController");
 let currentDrawing = [];
 module.exports = (io) => {
     io.on("connection", (socket) => {
@@ -36,9 +36,12 @@ module.exports = (io) => {
         socket.on("updateNote", async (note) => {
             io.emit("updateNote", note);
             const result = await updateStickyNote(note);//for saving 
-            console.log(result)
 
         });
+        socket.on("load-draw", async () => {
+            const drawing = await getDrawings();
+            io.emit("load-drawing", drawing);
+        })
         socket.on("draw", (path) => {
             currentDrawing.push(path);
             socket.broadcast.emit("draw", path);
@@ -59,7 +62,8 @@ module.exports = (io) => {
 
         // Clear canvas
         socket.on("clear-canvas", async (drawing) => {
-            currentDrawing = [];
+
+            // currentDrawing = [];
             io.emit("clear-canvas");
             await deletedrawings(drawing)
 
