@@ -15,7 +15,7 @@ app.use(cors());
 app.use(express.json());
 require('./routes/socketHandler')(io);
 
-const PORT = 5000;
+const PORT = 3001;
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
