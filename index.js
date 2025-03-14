@@ -17,7 +17,7 @@ app.use(cors());
 app.use(express.json());
 require("./routes/socketHandler")(io);
 
-const PORT = 3001;
+const PORT = 3002;
 
 // Initialize MongoDB connection and then start the server
 const startServer = async () => {
