@@ -2,16 +2,12 @@ const { MongoClient } = require("mongodb");
 
 // MongoDB connection string
 const uri =
-  "mongodb+srv://sreelakshmi:uWH7dGJq099JxG6H@syncboard.kh6rw.mongodb.net/?retryWrites=true&w=majority&appName=Syncboard";
+  "mongodb+srv://sreelakshmi:uWH7dGJq099JxG6H@syncboard.kh6rw.mongodb.net";
 
 // Create a new MongoClient with TLS options to fix SSL handshake issues
 const client = new MongoClient(uri, {
-  ssl: true,
-  tls: true,
-  tlsAllowInvalidCertificates: false,
-  tlsAllowInvalidHostnames: false,
-  serverSelectionTimeoutMS: 5000, // 5 seconds
-  connectTimeoutMS: 10000, // 10 seconds
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
 });
 
 let db;
