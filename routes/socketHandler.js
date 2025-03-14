@@ -19,6 +19,10 @@ let mainDrawing = { id: "main-drawing", paths: [] };
 // Debounce timers for saving to MongoDB
 const saveTimers = new Map();
 const DEBOUNCE_DELAY = 2000; // 2 seconds debounce delay
+const POSITION_UPDATE_THROTTLE = 50; // 50ms throttle for position updates
+
+// Track the last update time for each sticky note to prevent excessive updates
+const lastUpdateTimes = new Map();
 
 /**
  * Debounce function for saving to MongoDB
@@ -45,6 +49,24 @@ const debounceSave = (id, saveFunction, data) => {
 
   // Store the timer id
   saveTimers.set(id, timerId);
+};
+
+/**
+ * Throttle function for position updates
+ * @param {string} id - Unique identifier for the throttle
+ * @param {Function} callback - Function to call
+ * @returns {boolean} - Whether the function should proceed
+ */
+const throttleUpdate = (id) => {
+  const now = Date.now();
+  const lastUpdate = lastUpdateTimes.get(id) || 0;
+
+  if (now - lastUpdate < POSITION_UPDATE_THROTTLE) {
+    return false; // Too soon, don't update
+  }
+
+  lastUpdateTimes.set(id, now);
+  return true; // Proceed with update
 };
 
 // Initialize data from database
@@ -148,17 +170,43 @@ module.exports = (io) => {
     // Handle updating a sticky note
     socket.on("updateNote", async (note) => {
       try {
+        // Check if this is a position update (has position property)
+        const isPositionUpdate = note.position !== undefined;
+        // Check if this is a content update
+        const isContentUpdate = note.isContentUpdate === true;
+        // Check if this is a final content update that should be saved to the database
+        const isFinalContent = note.isFinalContent === true;
+
+        // For position updates, apply throttling to reduce network traffic
+        if (isPositionUpdate && !throttleUpdate(`pos_${note.id}`)) {
+          return; // Skip this update if it's too soon after the last one
+        }
+
         // Update cache immediately
         const index = stickyNotesCache.findIndex((n) => n.id === note.id);
         if (index !== -1) {
-          stickyNotesCache[index] = note;
+          // Merge the update with the existing note
+          stickyNotesCache[index] = { ...stickyNotesCache[index], ...note };
         }
 
         // Broadcast to all clients immediately
-        io.emit("updateNote", note);
+        // For content updates, we want to broadcast to all clients except the sender
+        // to avoid cursor position issues
+        if (isContentUpdate && !isFinalContent) {
+          socket.broadcast.emit("updateNote", note);
+        } else {
+          // For position updates and final content updates, broadcast to all clients
+          io.emit("updateNote", note);
+        }
 
-        // Debounce save to database
-        debounceSave(`update_note_${note.id}`, updateStickyNote, note);
+        // Debounce save to database - only for final content updates or final position
+        if (
+          isFinalContent ||
+          (!isPositionUpdate && !isContentUpdate) ||
+          note.isFinalPosition
+        ) {
+          debounceSave(`update_note_${note.id}`, updateStickyNote, note);
+        }
       } catch (err) {
         console.error("Error updating sticky note:", err);
       }
