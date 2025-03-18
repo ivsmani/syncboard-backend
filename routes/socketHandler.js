@@ -19,6 +19,15 @@ let mainDrawing = { id: "main-drawing", paths: [] };
 // Track connected users
 const connectedUsers = new Map();
 
+// Track which user is currently drawing
+let currentlyDrawingUser = null;
+
+// Track the last activity time of the drawing user
+let lastDrawingActivity = Date.now();
+
+// Define a timeout for auto-clearing drawing state due to inactivity
+const DRAWING_INACTIVITY_TIMEOUT = 20000; // 20 seconds
+
 // Debounce timers for saving to MongoDB
 const saveTimers = new Map();
 const DEBOUNCE_DELAY = 2000; // 2 seconds debounce delay
@@ -77,9 +86,24 @@ const throttleUpdate = (id) => {
  * @param {Object} io - Socket.io instance
  */
 const broadcastUserPresence = (io) => {
-  const users = Array.from(connectedUsers.values());
+  const users = Array.from(connectedUsers.values()).map((user) => {
+    return {
+      ...user,
+      isDrawing: user.id === currentlyDrawingUser,
+      // Add a timestamp for when drawing status changed to help with animations
+      lastStatusChange:
+        user.id === currentlyDrawingUser && !user.isDrawing
+          ? Date.now()
+          : user.lastStatusChange,
+    };
+  });
+
   io.emit("user-presence-update", users);
-  console.log(`Broadcasting user presence: ${users.length} users connected`);
+  console.log(
+    `Broadcasting user presence: ${
+      users.length
+    } users connected, currently drawing: ${currentlyDrawingUser || "none"}`
+  );
 };
 
 // Initialize data from database
@@ -93,11 +117,22 @@ const initializeData = async () => {
       // Find the main drawing or create it if it doesn't exist
       const existingMainDrawing = drawings.find((d) => d.id === "main-drawing");
       if (existingMainDrawing) {
-        mainDrawing = existingMainDrawing;
+        // Ensure paths is always an array
+        mainDrawing = {
+          ...existingMainDrawing,
+          paths: Array.isArray(existingMainDrawing.paths)
+            ? existingMainDrawing.paths
+            : [],
+        };
         console.log("Loaded main drawing from database");
       } else {
+        mainDrawing = { id: "main-drawing", paths: [] };
         console.log("No main drawing found, using empty drawing");
       }
+    } else {
+      // Default empty drawing if nothing found in database
+      mainDrawing = { id: "main-drawing", paths: [] };
+      console.log("No drawings found in database, using empty drawing");
     }
 
     // Load existing sticky notes from database
@@ -111,12 +146,57 @@ const initializeData = async () => {
     );
   } catch (err) {
     console.error("Error initializing data:", err);
+    // Default to empty drawing on error
+    mainDrawing = { id: "main-drawing", paths: [] };
   }
+};
+
+// Set up a periodic check for drawing inactivity
+const setupDrawingInactivityCheck = (io) => {
+  // Check every 10 seconds for inactive drawing sessions
+  setInterval(() => {
+    if (currentlyDrawingUser) {
+      const inactivityTime = Date.now() - lastDrawingActivity;
+      if (inactivityTime > DRAWING_INACTIVITY_TIMEOUT) {
+        console.log(
+          `Drawing inactive for ${inactivityTime}ms, auto-clearing drawing state`
+        );
+        currentlyDrawingUser = null;
+        broadcastUserPresence(io);
+      }
+    }
+  }, 10000); // Check every 10 seconds
+};
+
+/**
+ * Force clear the drawing state for a specific user or all users
+ * @param {Object} io - Socket.io instance
+ * @param {string|null} userId - User ID to clear, or null to check all users
+ */
+const forceClearDrawingState = (io, userId = null) => {
+  // If a specific user ID is provided, only clear if they are the drawing user
+  if (userId && userId === currentlyDrawingUser) {
+    console.log(`Force clearing drawing state for user ${userId}`);
+    currentlyDrawingUser = null;
+    broadcastUserPresence(io);
+    return true;
+  }
+  // If no user ID is provided, clear the current drawing user regardless
+  else if (!userId && currentlyDrawingUser) {
+    console.log(`Force clearing drawing state for all users`);
+    currentlyDrawingUser = null;
+    broadcastUserPresence(io);
+    return true;
+  }
+  return false;
 };
 
 module.exports = (io) => {
   // Initialize data when the server starts
   initializeData();
+
+  // Set up the drawing inactivity check
+  setupDrawingInactivityCheck(io);
 
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
@@ -127,6 +207,8 @@ module.exports = (io) => {
       joinedAt: new Date(),
       color: getRandomColor(),
       initial: getRandomInitial(),
+      lastStatusChange: Date.now(),
+      isDrawing: false,
     });
 
     // Broadcast updated user presence to all clients
@@ -267,8 +349,68 @@ module.exports = (io) => {
       }
     });
 
+    // Handle force clear drawing state event
+    socket.on("force-clear-drawing-state", () => {
+      const wasCleared = forceClearDrawingState(io, socket.id);
+      if (wasCleared) {
+        console.log(`Drawing state was force cleared by user ${socket.id}`);
+      }
+    });
+
+    // Handle explicit ensure-drawing-stopped event (for touch device safety)
+    socket.on("ensure-drawing-stopped", (data) => {
+      if (currentlyDrawingUser === socket.id) {
+        console.log(
+          `Received ensure-drawing-stopped from ${socket.id}, clearing drawing state`
+        );
+        currentlyDrawingUser = null;
+
+        // Update user's lastStatusChange timestamp
+        if (connectedUsers.has(socket.id)) {
+          const user = connectedUsers.get(socket.id);
+          connectedUsers.set(socket.id, {
+            ...user,
+            lastStatusChange: Date.now(),
+          });
+        }
+
+        // Broadcast updated user presence
+        broadcastUserPresence(io);
+      }
+    });
+
     // Handle real-time drawing - NO DEBOUNCE for real-time sync
     socket.on("draw", (path) => {
+      // If someone else is drawing, do not allow this user to draw
+      if (currentlyDrawingUser && currentlyDrawingUser !== socket.id) {
+        console.log(
+          `User ${socket.id} attempted to draw but ${currentlyDrawingUser} is already drawing`
+        );
+        // Notify the client that drawing is not allowed
+        socket.emit("drawing-not-allowed");
+        return;
+      }
+
+      // Set this user as the currently drawing user if not already set
+      if (!currentlyDrawingUser) {
+        currentlyDrawingUser = socket.id;
+
+        // Update user's lastStatusChange timestamp
+        if (connectedUsers.has(socket.id)) {
+          const user = connectedUsers.get(socket.id);
+          connectedUsers.set(socket.id, {
+            ...user,
+            lastStatusChange: Date.now(),
+          });
+        }
+
+        // Broadcast updated user presence to reflect who is drawing
+        broadcastUserPresence(io);
+      }
+
+      // Update the last drawing activity time
+      lastDrawingActivity = Date.now();
+
       // Add the path to the main drawing
       if (!mainDrawing.paths) {
         mainDrawing.paths = [];
@@ -286,56 +428,90 @@ module.exports = (io) => {
     });
 
     // Handle saving drawing when user stops
-    socket.on("stop-draw", async (drawing) => {
-      try {
-        console.log(
-          "stop-draw received with",
-          drawing.paths ? drawing.paths.length : 0,
-          "paths"
-        );
+    // socket.on("stop-draw", async (drawing) => {
+    //   try {
+    //     console.log(
+    //       "stop-draw received with",
+    //       drawing.paths ? drawing.paths.length : 0,
+    //       "paths"
+    //     );
 
-        // If the client sends a complete drawing, update our main drawing
-        if (drawing && drawing.paths && Array.isArray(drawing.paths)) {
-          // Ensure we're using the main-drawing ID
-          drawing.id = "main-drawing";
-          mainDrawing = drawing;
+    //     // Update the last drawing activity time on stop
+    //     lastDrawingActivity = Date.now();
 
-          // Broadcast the complete drawing to all clients to ensure consistency
-          // This is crucial for undo/redo operations to sync properly
-          io.emit("update-drawing", {
-            ...mainDrawing,
-            operation: "draw",
-            source: "server",
-          });
+    //     // Clear the currently drawing user if this user was drawing
+    //     if (currentlyDrawingUser === socket.id) {
+    //       currentlyDrawingUser = null;
 
-          // Debounce save to database
-          debounceSave("main-drawing", saveDrawings, mainDrawing);
-        }
-      } catch (error) {
-        console.error("❌ Error handling drawing:", error);
-      }
-    });
+    //       // Update user's lastStatusChange timestamp
+    //       if (connectedUsers.has(socket.id)) {
+    //         const user = connectedUsers.get(socket.id);
+    //         connectedUsers.set(socket.id, {
+    //           ...user,
+    //           lastStatusChange: Date.now(),
+    //         });
+    //       }
+
+    //       // Broadcast updated user presence
+    //       broadcastUserPresence(io);
+    //     }
+
+    //     // If the client sends a complete drawing, update our main drawing
+    //     if (drawing && drawing.paths && Array.isArray(drawing.paths)) {
+    //       // Ensure we're using the main-drawing ID
+    //       drawing.id = "main-drawing";
+    //       mainDrawing = drawing;
+
+    //       // Broadcast the complete drawing to all clients to ensure consistency
+    //       // This is crucial for undo/redo operations to sync properly
+    //       io.emit("update-drawing", {
+    //         ...mainDrawing,
+    //         operation: "draw",
+    //         source: "server",
+    //       });
+
+    //       // Debounce save to database
+    //       debounceSave("main-drawing", saveDrawings, mainDrawing);
+    //     }
+    //   } catch (error) {
+    //     console.error("❌ Error handling drawing:", error);
+
+    //     // In case of an error, force clear the drawing state to prevent lock
+    //     if (currentlyDrawingUser === socket.id) {
+    //       currentlyDrawingUser = null;
+    //       broadcastUserPresence(io);
+    //     }
+    //   }
+    // });
 
     // Handle clearing the canvas
     socket.on("clear-canvas", async () => {
       try {
-        // Clear the main drawing
+        console.log(
+          "Received clear-canvas event, completely resetting drawing"
+        );
+
+        // Reset the main drawing to an empty state
         mainDrawing = { id: "main-drawing", paths: [] };
 
         // Broadcast to all clients immediately using update-drawing for consistency
-        // This ensures the same event type is used for all drawing state changes
-        // For clear operations, broadcast to prevent feedback loop
-        socket.broadcast.emit("update-drawing", {
-          ...mainDrawing,
+        io.emit("update-drawing", {
+          id: "main-drawing",
+          paths: [],
           operation: "clear",
           source: "server",
         });
 
         // Also emit clear-canvas for backward compatibility
-        socket.broadcast.emit("clear-canvas");
+        io.emit("clear-canvas");
 
-        // Debounce save to database - save an empty drawing
-        debounceSave("clear-main-drawing", saveDrawings, mainDrawing);
+        // Immediately save the empty drawing to the database
+        try {
+          await saveDrawings({ id: "main-drawing", paths: [] });
+          console.log("Empty drawing saved to database after clear-canvas");
+        } catch (saveErr) {
+          console.error("Error saving empty drawing:", saveErr);
+        }
       } catch (err) {
         console.error("Error clearing canvas:", err);
       }
@@ -344,6 +520,14 @@ module.exports = (io) => {
     // Handle client disconnection
     socket.on("disconnect", () => {
       console.log("User disconnected:", socket.id);
+
+      // If the disconnected user was drawing, clear the currently drawing user
+      if (currentlyDrawingUser === socket.id) {
+        console.log(
+          `Drawing user ${socket.id} disconnected, clearing drawing state`
+        );
+        currentlyDrawingUser = null;
+      }
 
       // Remove user from connected users
       connectedUsers.delete(socket.id);
@@ -363,7 +547,36 @@ module.exports = (io) => {
           drawing.paths ? `${drawing.paths.length} paths` : "no paths"
         );
 
-        // If the client sends a complete drawing, update our main drawing
+        // Special handling for clear operations
+        if (operation === "clear") {
+          console.log("Processing clear operation in update-drawing");
+          // Complete reset of drawing data
+          mainDrawing = { id: "main-drawing", paths: [] };
+
+          // Broadcast the cleared drawing to all clients
+          io.emit("update-drawing", {
+            id: "main-drawing",
+            paths: [],
+            operation: "clear",
+            source: "server",
+          });
+
+          // Also emit clear-canvas for backward compatibility
+          io.emit("clear-canvas");
+
+          // Save immediately for clear operations
+          try {
+            await saveDrawings({ id: "main-drawing", paths: [] });
+            console.log(
+              "Empty drawing saved to database after clear operation"
+            );
+          } catch (saveErr) {
+            console.error("Error saving empty drawing:", saveErr);
+          }
+          return;
+        }
+
+        // For normal update operations
         if (drawing && drawing.paths !== undefined) {
           // Ensure we're using the main-drawing ID
           drawing.id = "main-drawing";
@@ -372,17 +585,17 @@ module.exports = (io) => {
           mainDrawing = {
             ...mainDrawing,
             ...drawing,
-            paths: drawing.paths || [],
+            paths: Array.isArray(drawing.paths) ? drawing.paths : [],
           };
 
           console.log(`Broadcasting ${operation} operation to all clients`);
 
-          // Broadcast the complete drawing to all clients except sender
-          // to prevent feedback loops in undo/redo operations
-          socket.broadcast.emit("update-drawing", {
-            ...mainDrawing,
+          // Broadcast the complete drawing to all clients
+          io.emit("update-drawing", {
+            id: "main-drawing",
+            paths: mainDrawing.paths,
             operation,
-            source: "server", // Mark as coming from the server
+            source: "server",
           });
 
           // Debounce save to database
