@@ -181,7 +181,8 @@ module.exports = (io) => {
         stickyNotesCache.push(note);
 
         // Broadcast to all clients immediately
-        io.emit("note-added", note);
+        // Use broadcast instead of io.emit to prevent feedback to the sender
+        socket.broadcast.emit("note-added", note);
 
         // Debounce save to database
         debounceSave(`note_${note.id}`, addStickyNote, note);
@@ -197,7 +198,8 @@ module.exports = (io) => {
         stickyNotesCache = stickyNotesCache.filter((n) => n.id !== note.id);
 
         // Broadcast to all clients immediately
-        io.emit("sticky-note-deleted", note);
+        // Use broadcast instead of io.emit to prevent feedback to the sender
+        socket.broadcast.emit("sticky-note-deleted", note);
 
         // Debounce save to database
         debounceSave(`delete_note_${note.id}`, deleteStickyNote, note);
@@ -233,8 +235,12 @@ module.exports = (io) => {
         // to avoid cursor position issues
         if (isContentUpdate && !isFinalContent) {
           socket.broadcast.emit("updateNote", note);
+        } else if (isPositionUpdate) {
+          // For position updates, broadcast to all clients EXCEPT the sender
+          // to avoid position jumping during drag operations
+          socket.broadcast.emit("updateNote", note);
         } else {
-          // For position updates and final content updates, broadcast to all clients
+          // For final content updates and other updates, broadcast to all clients
           io.emit("updateNote", note);
         }
 
@@ -318,14 +324,15 @@ module.exports = (io) => {
 
         // Broadcast to all clients immediately using update-drawing for consistency
         // This ensures the same event type is used for all drawing state changes
-        io.emit("update-drawing", {
+        // For clear operations, broadcast to prevent feedback loop
+        socket.broadcast.emit("update-drawing", {
           ...mainDrawing,
           operation: "clear",
           source: "server",
         });
 
         // Also emit clear-canvas for backward compatibility
-        io.emit("clear-canvas");
+        socket.broadcast.emit("clear-canvas");
 
         // Debounce save to database - save an empty drawing
         debounceSave("clear-main-drawing", saveDrawings, mainDrawing);
@@ -370,9 +377,9 @@ module.exports = (io) => {
 
           console.log(`Broadcasting ${operation} operation to all clients`);
 
-          // Broadcast the complete drawing to all clients to ensure consistency
-          // Include the operation type in the broadcast
-          io.emit("update-drawing", {
+          // Broadcast the complete drawing to all clients except sender
+          // to prevent feedback loops in undo/redo operations
+          socket.broadcast.emit("update-drawing", {
             ...mainDrawing,
             operation,
             source: "server", // Mark as coming from the server
